@@ -1,0 +1,82 @@
+name: Build and Push to GHCR
+
+# 构建自用镜像并推送到 GitHub Container Registry。
+# 仅在本 fork 仓库运行；使用内置 GITHUB_TOKEN，无需额外配置 secrets。
+# VPS 侧由 danmu-update.timer 定时 pull ghcr.io/zttybb/danmu_api:latest 完成滚动更新。
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - '**.md'
+      - 'LICENSE'
+  schedule:
+    # 上游同步（sync_fork.yml，每天 00:00 UTC）之后再跑一次，
+    # 确保 Fork Sync 的 merge commit 一定被构建成镜像。
+    - cron: '30 0 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: ghcr-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    # 只在自己的 fork 里跑，避免被上游同步带到别处误触发
+    if: github.repository_owner == 'ZTTYBB'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # 版本号来源与上游 docker-image.yml 保持一致
+      - name: Read version from globals.js
+        run: |
+          VERSION=$(grep "VERSION:" danmu_api/configs/globals.js | sed -E "s/.*VERSION: '(.*)'.*/\1/")
+          if [ -z "$VERSION" ]; then
+            echo "::error::Failed to parse VERSION from danmu_api/configs/globals.js"
+            exit 1
+          fi
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+          echo "Parsed version: $VERSION"
+
+      - name: Set lowercase image name
+        run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}" >> $GITHUB_ENV
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          # 只构 amd64：目标 VPS 是 x86_64，跳过 arm64 可省一半构建时间
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:latest
+            ${{ env.IMAGE }}:${{ env.VERSION }}
+            ${{ env.IMAGE }}:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Summary
+        run: |
+          echo "### 镜像已推送" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "${{ env.IMAGE }}:latest" >> $GITHUB_STEP_SUMMARY
+          echo "${{ env.IMAGE }}:${{ env.VERSION }}" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
