@@ -16,6 +16,11 @@ on:
     # 确保 Fork Sync 的 merge commit 一定被构建成镜像。
     - cron: '30 0 * * *'
   workflow_dispatch:
+  workflow_run:
+    # Fork Sync 一完成立即触发构建，不再依赖每日 schedule（GitHub schedule 常延迟 3.5h+）
+    workflows: ["Fork Sync"]
+    types:
+      - completed
 
 permissions:
   contents: read
@@ -34,6 +39,10 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          # workflow_run 触发时 github.sha 未必是 merge 后的最新 commit，
+          # 显式 checkout 触发 workflow（Fork Sync）的 head SHA；其他触发方式回退 github.sha
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
       # 版本号来源与上游 docker-image.yml 保持一致
       - name: Read version from globals.js
